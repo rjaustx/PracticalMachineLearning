@@ -1,0 +1,145 @@
+---
+title: "Practical Machine Learning Project"
+author: "R. Jennings"
+date: "January 30, 2016"
+output: html_document
+---
+
+#Introduction
+This project uses machine learning to classify human activity from data recorded about movements in weightlifting. The data is the HAR (Human Activity Recognition) dataset (reference: http://groupware.les.inf.puc-rio.br/har) and includes data from accelerometers on the belt, arm, forearm and dumbbell. The goal was to build a classifier that can predict the class for each data entry. The classes are defined as A, B, C, D, E.
+
+#Preparing the Datasets
+The training and test datasets were donwloaded into local files for processing. The test dataset is the dataset for evaluation. Before splittling the training dataset into training and testing for algorithm testing, the two datasets were cleaned and processed to leave the desired features. 
+
+Processing steps:
+
+1. Read csv files
+2. Make a copy for processing
+3. Change all empty entries in cells of csv to NA for processing
+4. Set a threshold of 90% for NAs. Only keep columns that have at least 10% values that are not NAs. 
+5. Drop other columns that don't have value (X, user_name, time-related, etc.) for prediction
+6. This leaves cleaned datasets for training and test
+
+```{r}
+suppressWarnings(suppressMessages(library(caret))) #to keep messages from html
+pml_train <- read.csv("./pml-training.csv")
+pml_test <- read.csv("./pml-testing.csv")
+pml_train_cleaned <- pml_train
+pml_test_cleaned <- pml_test
+pml_train_cleaned[pml_train_cleaned==""] <- NA
+pml_test_cleaned[pml_test_cleaned==""] <- NA
+na_threshold <- .9
+na_empty_max <- dim(pml_train_cleaned)[1] * na_threshold
+goodcol <- !colSums(is.na(pml_train_cleaned)) > na_empty_max
+pml_train_cleaned <- pml_train_cleaned[, goodcol]
+pml_test_cleaned <- pml_test_cleaned[, goodcol]
+drop_columns <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window",
+                    "num_window")
+pml_train_cleaned <- pml_train_cleaned[,-which(names(pml_train_cleaned) %in% drop_columns)]
+pml_test_cleaned <- pml_test_cleaned[,-which(names(pml_test_cleaned) %in% drop_columns)]
+dim(pml_train_cleaned)
+dim(pml_test_cleaned)
+summary(pml_train_cleaned)
+```
+
+The dimensions of the two dataframes show there are 52 features remaining (52 features plus one predictor). Their summaries show that there are no NAs left that need to be addressed. For report brevity, only the results for pml_train_cleaned is included
+
+#Split training dataset for training and testing models
+
+The training dataset was split into 70% training and 30% testing for building and testing models.
+
+```{r}
+set.seed(54321)
+inTrain <- createDataPartition(pml_train_cleaned$classe, p=0.70, list=F)
+training <- pml_train_cleaned[inTrain, ]
+testing <- pml_train_cleaned[-inTrain, ]
+```
+
+#Cross Validation
+
+Repeated cross-validation was used with 10 folds and 3 repetitions. Varying the number of folds and repetitions only produced slight changes in model accuracy. Verbosity was turned off to limit messages. These settings were used to build all models.
+```{r}
+trainsettings <- trainControl(method="repeatedcv", number=10, repeats=3, verboseIter=FALSE)
+```
+
+#Build and test models
+
+Numerous model types were built and compared, including random forest, naive bayes, decision tree, LDA, GBM, and SVM. In addition, bagged decision trees and random forest with changes in the number of features at each split were implemented. Model accuracy was used as the method to select the best model. Below is a summary of accuracies for each type on the test set.
+
+Model (Accuracy):  
+Random Forest - default settings (.9949023)  
+Decision Tree (.4926083)  
+Naive Bayes (.7294817)   
+LDA (.697706)  
+GBM (.9624469)  
+svmRadial (.9235344)  
+Bagged Decision Tree (.9899745)  
+Random Forest Grid Selection by best mtry (8 was best) (.9964316)  
+
+#Out of Sample Errors
+
+Based on the model accuracies from the confusion matrices, the out of sample error for each model is predicted to be:  
+Model (Predicted Out of Sample Error):   
+Random Forest - default settings (.0050977)  
+Decision Tree (.5073917)  
+Naive Bayes (.2705183)   
+LDA (.302294)  
+GBM (.0375531)  
+svmRadial (.0764656)  
+Bagged Decision Tree (.0100255)  
+Random Forest Grid Selection by best mtry (8 was best) (.0035684)  
+
+Since it very time consuming to run all models, this report includes runs for decision tree, random forest (default), and the best model, random forest using a grid to select by best mtry. 
+
+To speed up the runs, parallel processing was enabled as shown below.
+```{r, cache=TRUE}
+suppressWarnings(suppressMessages(library(randomForest))) 
+#Set up parallel processes on all CPU cores
+suppressWarnings(suppressMessages(library(doParallel))) 
+cl <- makeCluster(detectCores(), type='PSOCK')
+registerDoParallel(cl)
+
+#Base decision tree
+suppressWarnings(suppressMessages(library(rpart))) 
+mod_tr_tree <- train(classe ~ ., data=training, method="rpart", trControl=trainsettings)
+pred_tst_tree <- predict(mod_tr_tree, testing)
+cm_tree <- confusionMatrix(pred_tst_tree, testing$classe)
+cat("Decision Tree accuracy is: ", cm_tree$overall['Accuracy'])
+
+#Default random forest
+mod_tr_rf <- train(classe ~ ., data=training, method="rf", trControl=trainsettings)
+pred_tst_rf <- predict(mod_tr_rf, testing)
+cm_rf <- confusionMatrix(pred_tst_rf, testing$classe)
+cat("Random Forest (default) accuracy is: ", cm_rf$overall['Accuracy'])
+
+#Random Forest Controlling Number of Features at Each Split
+#Total features is 52, default algorithm select sqrt(52)
+#This control varies the number of features at each split = 4, 8, 16, 32, 40, 52
+#Will take a long time to run
+grid_rf <- expand.grid(.mtry = c(4, 8, 16, 32, 40, 52))
+mod_tr_rf_grid <- train(classe ~ ., data=training, method = "rf", trControl=trainsettings, tuneGrid = grid_rf)
+pred_tst_rf_grid <- predict(mod_tr_rf_grid, testing)
+cm_rf_grid <- confusionMatrix(pred_tst_rf_grid, testing$classe)
+cat("RF with Grid accuracy is: ", cm_rf_grid$overall['Accuracy'])
+
+
+```
+
+#Get predictions for 20 test cases
+Using the three models built above, the predictions for the quiz test cases are as follows. 
+
+```{r, cache=TRUE}
+pred_quiz_test_set_tree <- predict(mod_tr_tree, pml_test_cleaned)
+pred_quiz_test_set_tree_pr <- paste0(pred_quiz_test_set_tree, collapse = " ")
+print(paste0("Predictions for test set - base decision tree: ", pred_quiz_test_set_tree_pr, collapse = ""))
+
+pred_quiz_test_set_rf <- predict(mod_tr_rf, pml_test_cleaned)
+pred_quiz_test_set_rf_pr <- paste0(pred_quiz_test_set_rf, collapse = " ")
+print(paste0("Predictions for test set - base random forest: ", pred_quiz_test_set_rf_pr))
+
+pred_quiz_test_set_rf_grid <- predict(mod_tr_rf_grid, pml_test_cleaned)
+pred_quiz_test_set_rf_grid_pr <- paste0(pred_quiz_test_set_rf_grid, collapse = " ")
+print(paste0("Predictions for test set - random forest with grid for mtry: ", pred_quiz_test_set_rf_grid_pr))
+```
+
+Since random forest with grid was most accurate, these predictions were used for the quiz and were 100% accurate. The predictions for base random forest were the same however.
